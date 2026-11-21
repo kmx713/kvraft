@@ -105,8 +105,3 @@ type: CLIENT_REQ / CLIENT_RESP / RAFT_VOTE / RAFT_APPEND / REDIRECT
 
 ---
 
-<<<<<<< HEAD
-
-=======
-**下一步**：确认这个结构没问题，我就按 P1 → P4 顺序生成全部可编译运行的代码（不留占位符）。
->>>>>>> e4593d2401f24411f515e9e9de6a2a5219a7b4d2
