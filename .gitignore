@@ -1,5 +1,21 @@
-# Visual Studio 缓存目录
+# VS 缓存
 .vs/
 *.vsidx
 *.suo
 *.user
+
+# CMake 编译输出目录（你的构建目录是 out/build）
+out/
+build/
+
+# CMake 缓存文件
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
+# Ninja 构建文件
+build.ninja
+rules.ninja
+
+# 测试临时文件
+Testing/
