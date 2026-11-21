@@ -1,0 +1,5 @@
+# Visual Studio 缓存目录
+.vs/
+*.vsidx
+*.suo
+*.user
