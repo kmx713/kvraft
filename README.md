@@ -95,13 +95,5 @@ type: CLIENT_REQ / CLIENT_RESP / RAFT_VOTE / RAFT_APPEND / REDIRECT
 | P3 | Raft 选举 + 日志复制 | 3 节点集群，kill Leader 自动恢复 |
 | P4 | 压测 + 故障演练脚本 + README | 完整项目 + 数据报告 |
 
-## 六、面试预期问答（提前准备）
 
-- 为什么用 SkipList 不用红黑树？（范围查询/并发友好/实现复杂度）
-- Raft 选举怎么保证不脑裂？（任期 + 多数派）
-- 日志复制如何处理 Follower 日志冲突？（Leader 强制覆盖 + nextIndex 回退）
-- WAL 为什么必须 fsync？吞吐和安全的取舍？
-- epoll LT 和 ET 的区别，你怎么处理 EAGAIN？
-
----
 
