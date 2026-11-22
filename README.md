@@ -1,107 +1,117 @@
-# KVRaft — 分布式 KV 存储引擎设计方案
+# KVRaft - 分布式 KV 存储引擎
 
-## 一、项目定位
+基于 **Raft 一致性算法** 的三节点分布式 KV 存储引擎（C++14 / Linux / epoll）。
 
-一个用 C++ 从零实现的分布式键值存储，核心是 **Raft 一致性算法 + SkipList 存储引擎**。
-不依赖任何第三方框架（网络、序列化、日志全部手写）， demonstrating 完整的分布式系统能力。
+手写全部核心组件，零第三方依赖：epoll Reactor 网络层、自定义二进制协议、
+跳表存储引擎、WAL 预写日志、Raft 选举与日志复制、故障自动转移。
 
-**技术栈**：C++11/17、Linux epoll、TCP 自定义二进制协议、Raft、SkipList、WAL、CMake
+## 架构
 
-**集群形态**：3 节点 Raft 集群（1 Leader + 2 Follower），自动选主、故障自动恢复、写请求自动重定向。
+```
+                    ┌────────────── 客户端 kvclient ──────────────┐
+                    │  文本命令 → 二进制帧（重定向自动跟 Leader）   │
+                    └──────────────┬─────────────────────────────┘
+                                   ▼
+   ┌─────────────── 节点 0 (Leader) ───────────────┐
+   │  TcpServer/TcpClient (epoll + 非阻塞 IO)      │
+   │  ──► RaftNode（选举/日志复制/提交推进）        │
+   │        ──► SkipList 状态机 + raft.wal 持久化  │
+   └───────┬───────────────────────────┬───────────┘
+           │ AppendEntries RPC         │
+   ┌───────▼─────────┐        ┌────────▼────────┐
+   │ 节点 1 (Follower)│        │ 节点 2 (Follower)│
+   └─────────────────┘        └─────────────────┘
+```
 
-## 二、核心特性（简历亮点）
-
-1. **Raft 一致性算法**：Leader 选举（随机选举超时）、日志复制、提交规则、任期机制、节点崩溃恢复
-2. **SkipList 存储引擎**：手写跳表（多级索引、随机层高），O(log n) 插入/查询
-3. **WAL 预写日志**：写操作先落盘再应用内存，掉电不丢数据，fsync 刷盘策略
-4. **epoll 高并发网络层**：非阻塞 IO + 事件驱动，Reactor 模型（复用 tmms 的架构经验）
-5. **自定义二进制协议**：帧头 + 长度 + 校验，解决 TCP 粘包/拆包
-6. **客户端智能路由**：自动发现 Leader，非 Leader 节点请求重定向
-7. **故障演练脚本**：kill 掉 Leader 后 3 秒内自动选出新 Leader，数据不丢
-
-## 三、文件夹结构
+### 目录结构
 
 ```
 kvraft/
-├── CMakeLists.txt              # 兼容老版本 CMake（不用 -S/-B）
-├── README.md                   # 架构图 + 运行方式 + 压测结果
-├── include/                    # 所有头文件
-│   ├── common/
-│   │   ├── Log.h               # 日志模块（FileLog/LogStream 风格，复用 tmms 经验）
-│   │   ├── Buffer.h            # 应用层读写缓冲区
-│   │   ├── Protocol.h          # 自定义协议：帧头/消息类型/编解码
-│   │   └── TcpConn.h           # TCP 连接封装（非阻塞 fd + Buffer）
-│   ├── net/
-│   │   ├── EventLoop.h         # epoll 事件循环（单 Reactor）
-│   │   ├── Acceptor.h          # 监听 fd，accept 新连接
-│   │   └── TcpServer.h         # 连接管理 + 消息分发回调
-│   ├── storage/
-│   │   ├── SkipList.h          # 跳表核心（模板实现）
-│   │   └── KVStore.h           # 存储引擎：SkipList + WAL + 快照恢复
-│   ├── raft/
-│   │   ├── RaftNode.h          # Raft 状态机（Follower/Candidate/Leader）
-│   │   ├── RaftLog.h           # Raft 日志条目管理 + 持久化
-│   │   └── RaftPeer.h          # 节点间通信（RPC：RequestVote/AppendEntries）
-│   └── server/
-│       ├── KVServer.h          # 整合 Raft + 存储 + 网络的服务节点
-│       └── ClientSession.h     # 客户端会话：解析 SET/GET/DEL 命令
+├── include/
+│   ├── common/    Protocol.h（帧协议）Buffer.h（应用层缓冲）Log.h
+│   ├── net/       EventLoop.h TcpServer.h TcpClient.h   <- P2 网络层
+│   ├── raft/      RaftMessages.h（RPC 序列化）RaftNode.h <- P3 共识层
+│   └── storage/   SkipList.h（跳表）KVStore.h（WAL 单机引擎）<- P1 存储层
 ├── src/
-│   ├── common/  （Log.cpp、Protocol.cpp、TcpConn.cpp）
-│   ├── net/     （EventLoop.cpp、Acceptor.cpp、TcpServer.cpp）
-│   ├── storage/ （KVStore.cpp）
-│   ├── raft/    （RaftNode.cpp、RaftLog.cpp、RaftPeer.cpp）
-│   └── server/  （main.cpp、KVServer.cpp）
-├── client/
-│   └── kv_client.cpp           # 命令行客户端（自动找 Leader + 重定向跟随）
-├── scripts/
-│   ├── start_cluster.sh        # 一键启动 3 节点集群
-│   └── chaos_test.sh           # 故障演练：随机 kill 节点验证恢复
-└── test/
-    ├── test_skiplist.cpp       # 跳表单元测试（10万级随机插入/查询比对）
-    └── bench.cpp               # 压测：多线程并发读写 QPS
+│   ├── raft/      RaftNode.cpp（选举 + 日志复制 + 状态机应用）
+│   ├── net/       EventLoop.cpp TcpServer.cpp TcpClient.cpp
+│   ├── storage/   KVStore.cpp
+│   ├── server/    kvserver_main.cpp（集群节点入口）
+│   ├── client/    kvclient.cpp（命令行客户端）
+│   └── common/    Protocol.cpp（CRC16/编帧/拆帧）
+├── test/          test_skiplist.cpp test_protocol.cpp
+└── scripts/       demo_cluster.sh（故障演练）bench.sh（压测）
 ```
 
-## 四、模块设计要点
+## 快速开始
 
-### 1. 存储层（storage）
-- **SkipList**：最大 12 层，每层随机晋升概率 1/4；支持 GET/SET/DEL/SCAN
-- **WAL**：追加写二进制日志（op + key + value + crc32），启动时重放恢复
-- 写路径：`SET → WAL append + fsync → SkipList 插入 → 响应客户端`
+```bash
+cd build
+cmake ..          # 老版 CMake 也兼容（不用 -S/-B）
+make -j4
 
-### 2. Raft 层（raft）
-- 三状态：Follower / Candidate / Leader，随机选举超时 150~300ms
-- **RequestVote RPC**：选举投票，比较 term 与 log 新旧（最后一条日志 term/index）
-- **AppendEntries RPC**：Leader 心跳 + 日志复制，多数派确认后 commit
-- **持久化状态**：currentTerm / votedFor / log[] 每次变更立即落盘
-- 状态机应用：committed 的日志按序应用到 KVStore
+# 单元测试
+./test_skiplist     # 跳表：10 万次随机操作与 std::map 差分对比
+./test_protocol     # 协议：粘包/拆包/CRC/Raft 消息序列化
 
-### 3. 网络层（net）
-- 单 Reactor：epoll_wait + 就绪事件分发，非阻塞 fd + EAGAIN 处理
-- 两类端口：**客户端端口**（命令协议）+ **节点间端口**（Raft RPC）
+# 一键故障演练（启动集群 -> 写入 -> 强杀 Leader -> 验证恢复）
+bash scripts/demo_cluster.sh
 
-### 4. 协议（common/Protocol）
+# 手动启动三节点集群
+./kvserverd 0 /tmp/kvraft/n0 127.0.0.1:9101 127.0.0.1:9102 127.0.0.1:9103 &
+./kvserverd 1 /tmp/kvraft/n1 127.0.0.1:9101 127.0.0.1:9102 127.0.0.1:9103 &
+./kvserverd 2 /tmp/kvraft/n2 127.0.0.1:9101 127.0.0.1:9102 127.0.0.1:9103 &
+
+# 连任意节点使用（Follower 自动重定向 Leader）
+./kvclient 127.0.0.1:9102 set name kmx
+./kvclient 127.0.0.1:9102 get name
+
+# 压测
+bash scripts/bench.sh 10000 8 127.0.0.1:9101
 ```
-| magic(2B) | type(1B) | body_len(4B) | crc16(2B) | body |
-type: CLIENT_REQ / CLIENT_RESP / RAFT_VOTE / RAFT_APPEND / REDIRECT
+
+## 关键设计与面试要点
+
+### 1. 网络：epoll Reactor（P2）
+- **ET/LT**：监听 fd 与连接 fd 用 LT 模式，`accept` 用 while 循环收完（EAGAIN 退出）
+- **粘包/拆包**：帧格式 `magic(2B)+type(1B)+body_len(4B)+crc16(2B)+body`，
+  收到字节流先进 Buffer，循环 `try_decode_frame` 直到解不出完整帧
+- **背压**：内核发送缓冲满（EAGAIN）时数据排队 out_buf、挂 EPOLLOUT，
+  写完自动摘除，避免 busy loop；TCP_NODELAY 关闭 Nagle（心跳延迟敏感）
+- **单线程无锁**：所有回调在 EventLoop 循环线程内串行执行（muduo 思想），
+  无竞态；定时器用 epoll_wait 超时实现，Raft 选举/心跳全靠它驱动
+
+### 2. 存储：跳表 + WAL（P1）
+- 跳表 12 层、1/4 晋升概率，平均 O(log n)；10 万次随机操作与 std::map 差分测试
+- WAL 追加写 + fsync + CRC 校验，`kill -9` 后重放恢复，尾部残缺记录自动截断
+- WAL 超 64MB 自动 Compact：dump 全量 -> 原子 rename 替换（崩溃安全）
+
+### 3. 共识：Raft（P3）
+- **选举**：随机超时 800~1500ms 防活锁；任期号单调递增；投票前持久化
+- **日志复制**：AppendEntries 一致性检查（prev_log_index/term），
+  失败回退 next_index 重传修复；commit 推进只直接提交本任期条目（论文 5.4.2）
+- **NOOP 技巧**：Leader 上任立刻追加空条目，间接提交前任积压日志，加速恢复
+- **客户端语义**：写请求必须经 Leader 且多数派提交后才回 OK（线性一致写）；
+  Follower 返回 REDIRECT 帧让客户端自动跟 Leader
+- **崩溃恢复**：raft.wal 记录 META（term/voted_for/commit）与 ENTRY，
+  重启重放；fsync 保证已回复 OK 的数据崩溃不丢
+
+### 4. 已知限制与演进方向（面试加分项）
+- 单线程 Reactor：可扩展多 Reactor（one loop per thread）+ 主从 fd 分发
+- kvclient 每命令建连：压测含建连开销；可做长连接 + pipeline 批量发
+- 读请求非严格线性一致（Follower 状态机可能落后心跳间隔）：
+  演进方向 ReadIndex / Lease Read（etcd 的方案）
+- 快照（InstallSnapshot RPC）未实现：长日志节点重启重放全量 WAL，可加快照截断
+- 组提交（group commit）批量 fsync 可提升写吞吐（吞吐/安全取舍）
+
+## 压测结果
+
 ```
-客户端命令文本协议（调试友好）：`SET name kmx` → `OK` / `GET name` → `kmx` / `ERR redirect 127.0.0.1:9001`
+bash scripts/bench.sh 10000 8
+# 输出示例（虚拟机实测会偏低，含每条命令建连开销）：
+# 总耗时   : XX.XXs
+# 吞吐     : XXXX ops/s
+```
 
-## 五、开发里程碑（4 个阶段）
-
-| 阶段 | 内容 | 产出 |
-|------|------|------|
-| P1 | SkipList + WAL + 单机 KVServer | 单机版 KV，跑通单元测试 |
-| P2 | epoll 网络层 + 协议 + 命令行客户端 | 网络版单机 KV |
-| P3 | Raft 选举 + 日志复制 | 3 节点集群，kill Leader 自动恢复 |
-| P4 | 压测 + 故障演练脚本 + README | 完整项目 + 数据报告 |
-
-## 六、面试预期问答（提前准备）
-
-- 为什么用 SkipList 不用红黑树？（范围查询/并发友好/实现复杂度）
-- Raft 选举怎么保证不脑裂？（任期 + 多数派）
-- 日志复制如何处理 Follower 日志冲突？（Leader 强制覆盖 + nextIndex 回退）
-- WAL 为什么必须 fsync？吞吐和安全的取舍？
-- epoll LT 和 ET 的区别，你怎么处理 EAGAIN？
-
----
+> 压测后把实测数字填到这里（简历量化数据用）。
 

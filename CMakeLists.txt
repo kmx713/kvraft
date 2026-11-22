@@ -39,5 +39,29 @@ add_executable(test_skiplist
 )
 target_link_libraries(test_skiplist ${CMAKE_THREAD_LIBS_INIT})
 
-# P2 将新增：kvserverd（epoll 网络服务）、kvclient
-# P3 将新增：raft 库与集群节点目标
+# ---------- P2/P3 目标：Raft 集群节点 ----------
+# 网络层源文件（P2）+ Raft 状态机（P3）一起编成节点可执行文件
+add_executable(kvserverd
+    src/server/kvserver_main.cpp  # 集群节点入口
+    src/raft/RaftNode.cpp         # Raft 状态机（选举 + 日志复制）
+    src/net/EventLoop.cpp         # epoll 事件循环
+    src/net/TcpServer.cpp         # TCP 服务端（连接管理/拆帧/背压）
+    src/net/TcpClient.cpp         # TCP 客户端（节点间主动连接/自动重连）
+    src/common/Protocol.cpp       # 帧协议（magic/type/len/crc16）
+)
+target_link_libraries(kvserverd ${CMAKE_THREAD_LIBS_INIT})
+
+# ---------- P2 目标：命令行客户端 ----------
+# 独立实现阻塞式 socket 收发（不依赖 EventLoop，客户端要的就是简单直接）
+add_executable(kvclient
+    src/client/kvclient.cpp
+    src/common/Protocol.cpp
+)
+target_link_libraries(kvclient ${CMAKE_THREAD_LIBS_INIT})
+
+# ---------- 协议单元测试 ----------
+add_executable(test_protocol
+    test/test_protocol.cpp
+    src/common/Protocol.cpp
+)
+target_link_libraries(test_protocol ${CMAKE_THREAD_LIBS_INIT})
